@@ -1,0 +1,258 @@
+#!/bin/bash
+
+#########################################################################
+#
+# sapl - System and process load
+#
+# Copyright by toolarium, all rights reserved.
+#
+# This file is part of the toolarium common-build.
+#
+# The common-build is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# The common-build is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Foobar. If not, see <http://www.gnu.org/licenses/>.
+#
+# Load, see https://www.brendangregg.com/blog/2017-08-08/linux-load-averages.html
+#########################################################################
+
+PN=$(basename "$0" 2>/dev/null)
+baseFactor=1024
+
+
+#########################################################################
+# Usage
+#########################################################################
+Usage() {
+    echo "$PN - System and process load."
+    echo "usage: $PN [OPTION]"
+    echo ""
+    echo "Overview of the available OPTIONs:"
+    echo " -h, --help            Show this help message."
+    echo " -v, --version         Print the version information."
+    echo " -b                    Print size in bytes."
+    echo " -kb                   Print size in kilo bytes (base 1000)."
+    echo " -k, -kib              Print size in kilo bytes."
+    echo " -mb                   Print size in mega bytes (base 1000)."
+    echo " -m, -mib              Print size in mega bytes."
+    echo " -gb                   Print size in giga bytes  (base 1000)."
+    echo " -g, -gib              Print size in giga bytes."
+    echo " -tb                   Print size in terra bytes (base 1000)."
+    echo " -t, -tib              Print size in terra bytes."
+    echo " -pb                   Print size in petta bytes (base 1000)."
+    echo " -p, -pib              Print size in petta bytes."
+    echo " --pid <id>            The process ids sparated by comma to monitor."
+    echo " --timestamp           The current timestamp."
+    echo " --uptime              The system uptime."
+    echo " --load                The system load."
+    echo " --loop [<id>]         Stay in loop. The id is optional. The loop ends in case the process with id don't exist anymore."
+    echo " --sleeptime value     Defines the sleep time in seconds (default 5 seconds)."
+    echo " --file filename       Defines the filename to write the output."
+    echo " --maxlines value      Defines the max lines in the file."
+    echo " --noheader            Prints no header."
+    exit 1
+}
+
+
+#########################################################################
+# Pretty print
+#########################################################################
+prettyPrintBytes() {
+    v=$1
+    i=0
+    s=" KMGTPEZY"
+    #s=" kkgtpezy"
+    vheader=""
+    [ "$divideFactor" -gt 0 ] && vheader="B"
+    [ -n "${s# }" ] && [ "$baseFactor" -eq 1024 ] && vheader="iB"
+
+    if [ $2 -lt 0 2>/dev/null ]; then
+        while [ $v -gt $baseFactor ]; do
+            i=$((i+1))
+            v=$((v/$baseFactor))
+        done
+    else
+        while [ $i -lt $2 2>/dev/null ]; do
+            i=$((i+1))
+            v=$((v/$baseFactor))
+        done
+    fi
+    echo $v ${s:$i:1}$vheader
+}
+
+
+#########################################################################
+# Calculate memory
+#########################################################################
+calculateMemory() {
+    processMemory=""
+
+    if [ "$noheader" = "false" ]; then
+        [ "$timestamp" = "true" ] && printf "%-20s" "Timestamp"
+        [ "$uptime" = "true" ] && printf "%-17s" "Sys Uptime [sec]"
+        [ "$avgload" = "true" ] && printf "%-17s" "Sys Load Avg"
+        printf "%-17s %-17s %-17s" "Sys Mem Total" "Sys Used Mem" "Sys Free Mem"
+
+        if [ -n "$pidId" ]; then
+            for i in $(echo "$pidId" | sed 's/,/ /g'); do
+                printf " %-17s %-17s %-17s" "Proc Mem $i" "Proc CPU $i" "Proc LWP $i"
+            done
+        fi
+        printf "\n"
+    fi
+
+    if [ "SunOS" = "`uname -s`" ]; then
+        totalMemory=$(($baseFactor * $baseFactor * `/usr/sbin/prtconf | grep Memory | awk '{print $3}'`))
+        #pageSize=$((`/usr/bin/pagesize` / $baseFactor ))
+        #usedMemory=$(($baseFactor * `sar -r 1 1 | tail -1 | awk '{printf "%d\n", ($2*"'$pageSize'") }'`))
+        #usedMemory=$(($baseFactor * `/usr/ucb/ps aux | awk '{sum +=$6}; END {print sum}'`))
+        usedMemory=$(($baseFactor * `ps -elfy | awk '{sum +=$8}; END {print sum}'`))
+    else
+        totalMemory=$(($baseFactor * `free | sed -ne '2p' | awk '{ print $2 }'`))
+        usedMemory=$(($baseFactor * `ps aux | awk '{sum +=$6}; END {print sum}'`))
+    fi
+
+    freeMemory=`echo $(($totalMemory - $usedMemory))`
+    totalMemory=`prettyPrintBytes $totalMemory $divideFactor`
+    usedMemory=`prettyPrintBytes $usedMemory $divideFactor`
+    freeMemory=`prettyPrintBytes $freeMemory $divideFactor`
+    [ "$timestamp" = "true" ] && printf "%-20s" "$(date '+%Y-%m-%d %H:%M:%S.%s' | cut -c1-19)"
+    [ "$uptime" = "true" ] && printf "%-17s" "$(cat /proc/uptime | cut -d '.' -f1)"
+    [ "$avgload" = "true" ] && printf "%-17s" "$(cat /proc/loadavg | cut -d ' ' -f1)"
+    #[ "$avgload" = "true" ] && printf "%-17s" "$(cat /proc/loadavg)"
+    printf "%-17s %-17s %-17s" "$totalMemory" "$usedMemory" "$freeMemory"
+
+    if [ -n "$pidId" ]; then
+        for i in $(echo "$pidId" | sed 's/,/ /g'); do
+            if [ "SunOS" = "`uname -s`" ]; then
+                processMemory=$(($baseFactor * `ps -lyp $i | awk '{sum +=$8}; END {print sum}'`))
+            else
+                processMemory=$(($baseFactor * `ps up $i | awk '{sum +=$6}; END {print sum}'`))
+                processCpu=$(ps -p $i -o pcpu | sed '1d' | awk '{sum +=$1}; END {print sum}')
+                processNlwp=$(ps -p $i -o nlwp | sed '1d' | awk '{sum +=$1}; END {print sum}')
+            fi
+
+            processMemory=`prettyPrintBytes $processMemory $divideFactor`
+            printf " %-17s %-17s %-17s" "$processMemory" "$processCpu" "$processNlwp"
+        done
+    fi
+    printf "\n"
+}
+
+
+#########################################################################
+# Process output
+#########################################################################
+processOutput() {
+    if [ -n "$file" ]; then
+        minFileIndex=1
+        [ -r "$file" ] && noheader="true" && minFileIndex=2
+        calculateMemory >> "$file"
+
+        if [ "$maxFileLines" -gt 0 ]; then
+            [ -r "$file" ] && fileLines=$(cat $file | wc -l 2>/dev/null) || fileLines=0
+            linesToDelete=$(eval "expr $fileLines - $maxFileLines")
+
+            if [ "$linesToDelete" -gt 0 ]; then
+                linesToDelete=$(eval "expr $linesToDelete + ${minFileIndex} - 1") || linesToDelete=$minFileIndex
+                sed -i "${minFileIndex},${linesToDelete}d" "$file"
+            fi
+        fi
+    else
+        calculateMemory
+    fi
+
+    noheader="true"
+}
+
+
+#########################################################################
+# main
+#########################################################################
+divideFactor=-1
+pidId=""
+timestamp="false"
+uptime="false"
+avgload="false"
+stayInLoop="false"
+sleeptime="5"
+file=""
+maxFileLines=0
+noheader="false"
+verifyPids=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h)           Usage; exit 1;;
+        --help)       Usage; exit 1;;
+        --noheader)   noheader="true";;
+        -b)           divideFactor=0;;
+        -k)           divideFactor=1;;
+        -kb)          divideFactor=1;baseFactor=1000;;
+        -kib)         divideFactor=1;;
+        -m)           divideFactor=2;;
+        -mb)          divideFactor=2;baseFactor=1000;;
+        -mib)         divideFactor=2;;
+        -g)           divideFactor=3;;
+        -gb)          divideFactor=3;baseFactor=1000;;
+        -gib)         divideFactor=3;;
+        -t)           divideFactor=4;;
+        -tb)          divideFactor=4;baseFactor=1000;;
+        -tib)         divideFactor=4;;
+        -p)           divideFactor=5;;
+        -pb)          divideFactor=5;baseFactor=1000;;
+        -pib)         divideFactor=5;;
+        --pid)        shift;pidId=$1;;
+        --timestamp)  timestamp="true";;
+        --uptime)     uptime="true";;
+        --load)       avgload="true";;
+        --loop)       stayInLoop="true"; ! [[ $2 == -* ]] && shift && verifyPid=$1;;
+        --sleeptime)  shift;sleeptime="$1";;
+        --file)       shift;file="$1";;
+        --maxlines)   shift;maxFileLines="$1";;
+        -*)           echo "==>Parameter faild: Invalid parameter $1."; echo ""; Usage; exit 1;;
+        *)      ;;
+    esac
+    shift
+done
+
+
+
+if [ "$stayInLoop" = "true" ]; then
+    while [ "$stayInLoop" = "true" ]; do
+        if [ -n "$verifyPid" ]; then
+            for i in $(echo "$verifyPid" | sed 's/,/ /g'); do
+                ps -p $i >/dev/null 2>&1 || stayInLoop="false"
+            done
+        fi
+
+        if [ "$stayInLoop" = "true" ]; then
+            processOutput $(calculateMemory)
+            sleep "$sleeptime"
+        fi
+    done
+else
+    processOutput $(calculateMemory)
+fi
+
+#########################################################################
+# test:
+# sleepTime=5
+# cmd="bash -c 'while true; do sleep 2; done' &"
+# eval "$cmd" 2>/dev/null && PID_ID=$(echo $!)
+# src/main/script/sapl --timestamp --load --sleeptime $sleepTime --file test.dat --maxlines $(expr 60 \* 60 \* 24 / $sleepTime) --loop $PID_ID --pid $PID_ID &
+# sleep 10
+# kill $PID_ID
+#########################################################################
+
+#########################################################################
+# EOF
+#########################################################################
